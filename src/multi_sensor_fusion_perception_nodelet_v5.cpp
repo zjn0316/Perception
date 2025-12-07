@@ -72,6 +72,8 @@ void MultiSensorFusionPerceptionNodelet::spin(
     const nlink_parser::LinktrackAoaNodeframe0::ConstPtr& uwb_msg,
     const people_tracker::PersonArray::ConstPtr& leg_msg)
 {
+    auto start = ros::Time::now();
+
     lookupStaticTransforms();
     // debug 打印变换矩阵示例：
     // print_transform_matrix("nlink", "zed2_left_camera_optical_frame");
@@ -137,6 +139,28 @@ void MultiSensorFusionPerceptionNodelet::spin(
     }
 uwb_done:;
 
+    /*
+    raw rgb ──> cv::Mat img_zed
+        │
+        ├─YOLO─► vector<Detection> res
+        │        │
+        │        └─filterResult─► vector<Detection> res_fd
+        │
+        ├─toDetectRes─► vector<DetectRes> dets
+        │
+        ├─reid->CropSubImages─► vector<cv::Mat> crops   // 128×384
+        │        │
+        │        └─reid->InferenceImages─► vector<cv::Mat> features  // 512-D
+        │
+        ├─tracker->update(dets, features, …)  // Deep-SORT 核心
+        │        │
+        │        └─tracker_boxes（最新检测结果+ID）
+        │
+        ├─tracker->getCurrentIDs() ─► vector<int> ids
+        │
+        └─drawID ─► 画框+ID 到 img_id
+    */
+
     /* ======================== 2. ZED 处理 ========================== */
     {
         /* -------------- 1. 解压彩色图 2ms-------------- */
@@ -152,25 +176,24 @@ uwb_done:;
         /* -------------- 2. YOLO 检测 + 过滤 10ms -------------- */
         std::vector<Detection> res    = yolo_->inference(img_zed);
         std::vector<Detection> res_fd = filterResult(res);
-        // @TODO:添加deepsort
+
+        /* -------------- 3. DeepSorT -------------- */
         std::vector<DetectRes> dets = toDetectRes(res_fd);
         cv::Mat                affine = cv::Mat::eye(12, 13, CV_32F);  // 无运动补偿
-        /* -------------- 2.5 提取 ReID 特征 -------------- */
+        /* --------------  提取 ReID 特征 -------------- */
         // 先裁 128×384 小图
         std::vector<cv::Mat> crops = reid_->CropSubImages(img_zed, dets);
         // 再提 512-D 特征
         std::vector<cv::Mat> features = reid_->InferenceImages(crops);
-        /* -------------- 2.6 Deep-SORT 跟踪 -------------- */
+        /* --------------  Deep-SORT 跟踪 -------------- */
         tracker_->update(dets, features, img_zed.cols, img_zed.rows, affine);
+        /* --------------  发布话题-------------- */
         cv::Mat img_id = img_zed.clone();
         drawID(img_id, dets, tracker_->getCurrentIDs());   // 下面给实现
         sensor_msgs::ImagePtr msg_id = cv_bridge::CvImage(img_msg->header, "bgr8", img_id).toImageMsg();
         pub_deepsort_.publish(msg_id);
 
-
-
-
-        /* -------------- 3. 深度图 → cv::Mat (32FC1) 0ms -------------- */
+        /* -------------- 4. 深度图 → cv::Mat (32FC1) 0ms -------------- */
         cv::Mat depth_zed;
         try {
             depth_zed = cv_bridge::toCvShare(depth_msg,sensor_msgs::image_encodings::TYPE_32FC1)->image;
@@ -179,7 +202,7 @@ uwb_done:;
             goto zed_done;
         }
 
-        /* -------------- 4.像素坐标系投影到图像坐标系 2-D 框中心 → 3-D 坐标 -------------- */
+        /* -------------- 5.像素坐标系投影到图像坐标系 2-D 框中心 → 3-D 坐标 -------------- */
         visualization_msgs::MarkerArray marker_array_zed;
         int marker_id_zed = 0;
 
@@ -279,8 +302,8 @@ zed_done:;
     //     pub_leg_marker_.publish(ma_leg);
     // }
 
-    
-    ROS_INFO("------------spin finished------------.");
+    auto duration = (ros::Time::now() - start).toSec();
+    ROS_INFO("spin 花费 %.1f ms.------------spin finished------------.", duration * 1000);
 }
 
 void MultiSensorFusionPerceptionNodelet::caminfoCallback(const sensor_msgs::CameraInfoConstPtr &caminfo) 
@@ -381,9 +404,7 @@ std::vector<Detection> MultiSensorFusionPerceptionNodelet::filterResult(const st
     return out;
 }
 
-std::vector<DetectRes> MultiSensorFusionPerceptionNodelet::toDetectRes(
-    const std::vector<Detection>& yolo_dets)
-{
+std::vector<DetectRes> MultiSensorFusionPerceptionNodelet::toDetectRes(const std::vector<Detection>& yolo_dets){
     std::vector<DetectRes> out;
     for (const auto& d : yolo_dets) {
         if (d.classId != 0) continue;   // 只要行人
