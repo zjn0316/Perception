@@ -38,7 +38,10 @@ void MultiSensorFusionPerceptionNodelet::onInit() {
 
     // zed
     yolo_.reset(new YoloDetector(yolo_engine_path_));
-    deepsort_ = makeDeepSort(deepsort_engine_path_,64, 256, 0, deepsort_max_age_,deepsort_n_init_,deepsort_max_iou_,deepsort_max_cos_);
+    // 使用 TensorRT 默认 Logger  ， deepsort强制要求输入logger级别
+    static TensorRTLogger logger;  // 使用静态确保生命周期
+    deepsort_.reset(new DeepSort(deepsort_engine_path_, 32, 256, 0, &logger,
+                                 deepsort_max_age_, deepsort_n_init_, deepsort_max_iou_, deepsort_max_cos_)) ;
 
     sub_img_.reset(new message_filters::Subscriber<sensor_msgs::CompressedImage>(nh,img_topic_, 1));
     sub_depth_.reset(new message_filters::Subscriber<sensor_msgs::Image>(nh,depth_topic_, 1)); 

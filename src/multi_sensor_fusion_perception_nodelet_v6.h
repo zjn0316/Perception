@@ -35,10 +35,33 @@
 // 3. 项目自身头文件
 #include "yolo_infer.h"
 #include "deepsort.h"
-#include "deepsort_logging.h"
-#include "deepsort_help.h"
+#include "NvInfer.h"
 
 
+// 自定义 deepsort Logger 类
+class TensorRTLogger : public nvinfer1::ILogger {
+public:
+    void log(Severity severity, const char* msg) noexcept override {
+        // 根据严重级别输出
+        switch (severity) {
+            case Severity::kINTERNAL_ERROR:
+                ROS_ERROR("TensorRT INTERNAL_ERROR: %s", msg);
+                break;
+            case Severity::kERROR:
+                ROS_ERROR("TensorRT ERROR: %s", msg);
+                break;
+            case Severity::kWARNING:
+                ROS_WARN("TensorRT WARNING: %s", msg);
+                break;
+            case Severity::kINFO:
+                ROS_INFO("TensorRT INFO: %s", msg);
+                break;
+            case Severity::kVERBOSE:
+                ROS_DEBUG("TensorRT VERBOSE: %s", msg);
+                break;
+        }
+    }
+};
 
 
 
